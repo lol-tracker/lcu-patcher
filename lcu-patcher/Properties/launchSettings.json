@@ -1,0 +1,8 @@
+{
+  "profiles": {
+    "lcu-patcher": {
+      "commandName": "Project",
+      "commandLineArgs": "\"D:\\Games\\Riot Games\\League of Legends\\LeagueClient.exe\""
+    }
+  }
+}
