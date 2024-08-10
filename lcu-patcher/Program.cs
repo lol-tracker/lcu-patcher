@@ -7,6 +7,42 @@ if (args.Length < 1)
     return 1;
 }
 
+// There are multiple places where we need to patch league client to think that swagger api argument is set.
+// But we can patch it only once when API object is copied.
+//
+// There is this huge object that i call api object, which is responsible for a lot of api stuff.
+// Inside it there is a member, that controls wether or not expose swagger and openapi apis.
+//
+// "boolOffset" points to cmp;jz instructions that compare boolean of said member.
+// Thats where we get our "target" offset.
+//
+// To find that place in case if pattern breaks you can use this pattern:
+// C7 45 ? 72 69 6F 74 C6 45 ? 00 4C 8D 0D
+// ^ is: mov dword ptr [rbp+???], 746F6972h ; "riot"
+//       mov byte ptr [rbp+???], 0 ; '\0'
+//       lea r9, "swagger"
+//
+// You will land exactly in a block that is only executed if flag is set,
+// so go a bit up and look for cmp;jz instructions.
+//
+// Now onto object copy method.
+// Finding it is trivial, but our boolean member is actually member of another object _INSIDE_ api object,
+// meaning its copying method accepts address of said object, and _NOT_ api object,
+// so we have to calculate that offset ourselves (See "var patchOffset = ...").
+// 
+// Then we look for something like:
+// movzx   eax, byte ptr [rdi+XXX]
+// mov     [rbx+XXX], al
+//
+// Where XXX is patchOffset (meaning offset based on an object inside of API object)
+// This is part of object copy method.
+//
+// And then we just patch it to:
+// mov byte ptr [rbx+XXX], 1
+//
+// Das it.
+//
+
 var LCU_EXE = args[0];
 var stopwatch = new Stopwatch();
 stopwatch.Start();
@@ -15,7 +51,8 @@ byte[] buffer;
 try
 {
     buffer = File.ReadAllBytes(LCU_EXE);
-} catch
+}
+catch
 {
     Console.WriteLine("Failed to read league client file!");
     return 2;
@@ -25,43 +62,26 @@ using var ms = new MemoryStream(buffer);
 using var bw = new BinaryWriter(ms);
 using var br = new BinaryReader(ms);
 
-// Get actual offset here: 48 8D 9F ? ? ? ? 80 3B 00 0F 84 ? ? ? ? 0F 57 C0 0F 11 45 00 BA
-// Get local patch offset here: 49 8D 4C 24 ? 48 8B D3 E8
-// Patch here: 0F B6 87 ? ? ? ? 88 83 ? ? ? ?
-
-// How to find patch offset:
-// Look for "Creating Modules" string.
-// Right before using it there is a call. Follow it.
-// The very first call should be "Mtx_init_in_situ".
-// We need the second one.
-
-// How to find actual offset:
-// Look for "swagger" string.
-// Find xref that has "riot" string (its usually optimised to 746F6972h constant) a bit higher.
-// Then look for something like cmp byte ptr [reg], 0; jz/je higher
-// And check where that reg is written to.
-
 // First
-var actualOffsetPos = Utils.FindPattern(buffer, "48 8D 9F ? ? ? ? 80 3B 00 0F 84", 0x400);
-if (actualOffsetPos == -1)
+var boolOffsetPos = Utils.FindPattern(buffer, "80 BF ? ? ? ? ? 0F 84 ? ? ? ? 48 8D 8F ? ? ? ? 0F 57 C0", 0x400);
+if (boolOffsetPos == -1)
 {
     Console.WriteLine("Failed to find pattern 1!");
     return 3;
 }
 
-ms.Seek(actualOffsetPos + 3, SeekOrigin.Begin);
-var actualOffset = br.ReadUInt32();
+ms.Seek(boolOffsetPos + 2, SeekOrigin.Begin);
+var boolOffset = br.ReadUInt32();
 
-// NOTE: This most likely will break soon and i will have to implement few patterns to handle this.
-var localOffsetPos = Utils.FindPattern(buffer, "49 8D 4C 24 ? 48 8B D3 E8", 0x400);
-if (localOffsetPos == -1)
+var copyObjOffsetPos = Utils.FindPattern(buffer, "49 8D 4E ? E8 ? ? ? ? 90 0F 57 C0", 0x400);
+if (copyObjOffsetPos == -1)
 {
     Console.WriteLine("Failed to find pattern 2!");
     return 4;
 }
 
-ms.Seek(localOffsetPos + 4, SeekOrigin.Begin);
-var localOffset = br.ReadByte();
+ms.Seek(copyObjOffsetPos + 3, SeekOrigin.Begin);
+var copyObjOffset = br.ReadByte();
 
 var patchPatternBuffer = new byte[]
 {
@@ -69,7 +89,7 @@ var patchPatternBuffer = new byte[]
     0x88, 0x83, 0x00, 0x00, 0x00, 0x00         // mov     [rbx+????], al
 };
 using var patchPatternWriter = new BinaryWriter(new MemoryStream(patchPatternBuffer));
-var patchOffset = actualOffset - localOffset;
+var patchOffset = boolOffset - copyObjOffset;
 patchPatternWriter.Seek(3, SeekOrigin.Begin); patchPatternWriter.Write((UInt32)patchOffset);
 patchPatternWriter.Seek(9, SeekOrigin.Begin); patchPatternWriter.Write((UInt32)patchOffset);
 
