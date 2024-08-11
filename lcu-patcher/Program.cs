@@ -26,19 +26,29 @@ if (args.Length < 1)
 // so go a bit up and look for cmp;jz instructions.
 //
 // Now onto object copy method.
-// Finding it is trivial, but our boolean member is actually member of another object _INSIDE_ api object,
-// meaning its copying method accepts address of said object, and _NOT_ api object,
-// so we have to calculate that offset ourselves (See "var patchOffset = ...").
+// Find it is easy, just look for "Creating Modules" string.
+// Right before that there is a call, which is a copy method for huge _API object_.
+// The problem is that our bool flag is inside a smaller object inside of bigger API object.
+// Luckily the very first call _inside API object's copy method_ is exactly copy method of that smaller object.
+// The only issue is that it is passed with an offset, so we have to account for that.
+// So "copyObjOffset" pattern is just that call, which is currently something like:
+//  lea     rcx, [r14+78h]
+//  call    sub_140216050
+//  nop
+//  xorps   xmm0, xmm0
+//
+// Now as you can see there is an offset that we have to account for.
+// This is exact offset that we later use to calculate offset within copy method.
 // 
 // Then we look for something like:
-// movzx   eax, byte ptr [rdi+XXX]
-// mov     [rbx+XXX], al
+//  movzx   eax, byte ptr [rdi+XXX]
+//  mov     [rbx+XXX], al
 //
 // Where XXX is patchOffset (meaning offset based on an object inside of API object)
 // This is part of object copy method.
 //
 // And then we just patch it to:
-// mov byte ptr [rbx+XXX], 1
+//  mov byte ptr [rbx+XXX], 1
 //
 // Das it.
 //
